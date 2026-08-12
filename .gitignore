@@ -1,0 +1,15 @@
+# Swift / SwiftPM
+macapp/.build/
+macapp/.swiftpm/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# Build artifacts
+*.o
+*.hex
+build/
+
+# macOS
+.DS_Store
+
+# Notes: prebuilt firmware .uf2 artifacts are committed intentionally under firmware/
