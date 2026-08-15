@@ -9,12 +9,12 @@ let package = Package(
         // definitions (e.g. totem.json) as resources, loaded via DefinitionLoader.
         .target(name: "SplitForgeCore", resources: [.process("Resources")]),
 
-        // IOKit boundary: the concrete HIDTransport implementation. Kept separate so Core
-        // stays pure and the app/spike/tests depend on IOKit only where they must.
+        // HID boundary: the concrete HIDTransport implementations — IOKit (local USB) and the
+        // Pi-bridge (network). Kept separate so Core stays pure and depends on neither.
         .target(
             name: "SplitForgeHID",
             dependencies: ["SplitForgeCore"],
-            linkerSettings: [.linkedFramework("IOKit")]
+            linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("Network")]
         ),
 
         // M0 feasibility spike, now driving the real VialClient over IOKitHIDTransport.

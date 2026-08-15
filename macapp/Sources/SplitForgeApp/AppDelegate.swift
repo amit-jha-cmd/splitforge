@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
     private var settings = Settings.defaultSettings
 
-    private var transport: IOKitHIDTransport?
+    private var transport: (any HIDSource)?
     private var vial: VialClient?
     private var definition: KeyboardDefinition?
 
@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rows = definition?.matrix.rows ?? 8
         let cols = definition?.matrix.cols ?? 5
 
-        let transport = IOKitHIDTransport(vid: 0x3A3C, pid: 0x0002)
+        let transport = Self.makeTransport(settings: settings)
         let vial = VialClient(transport: transport, layerCount: 16, rows: rows, cols: cols)
         self.transport = transport
         self.vial = vial
@@ -44,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menuBar = MenuBarController(
             store: store,
+            source: settings.effectiveSource,
+            piBridgeHost: settings.piBridgeHost,
+            piBridgePort: settings.effectivePiBridgePort,
             onResync: { [weak vial] in try? vial?.start() },
             onOpacity: { [weak self] opacity in
                 guard let self else { return }
@@ -53,7 +56,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onResetPosition: { [weak self] in self?.overlay?.resetPosition() },
             onPreferences: { [weak self] in self?.openPreferences() },
-            onToggleLogin: { [weak self] in self?.toggleLogin() }
+            onToggleLogin: { [weak self] in self?.toggleLogin() },
+            onSelectSource: { [weak self] policy in
+                guard let self else { return }
+                self.settings.hidSource = policy
+                self.settingsStore.save(self.settings)   // applied on next launch
+            },
+            onSetPiBridgeAddress: { [weak self] host, port in
+                guard let self else { return }
+                self.settings.piBridgeHost = host
+                self.settings.piBridgePort = port
+                self.settingsStore.save(self.settings)
+            }
         )
         self.menuBar = menuBar
 
@@ -71,8 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         transport.onReport = { [weak self] report in
-            // IOHIDManager is scheduled on the main run loop (see IOKitHIDTransport.start), so this
-            // callback runs on the main thread — safe to mutate the store and drive AppKit here.
+            // Both transports deliver onReport on the main thread (IOKit via the main run loop;
+            // PiBridgeTransport dispatches to main), so it's safe to mutate the store + AppKit here.
             guard let self else { return }
             if let layer = LayerReport.decode(report) {
                 let newLayer = Int(layer)
@@ -97,13 +111,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.reflectOpacity(settings.overlayOpacity)
         menuBar.reflectLoginEnabled(LoginItem.isEnabled)
 
-        switch transport.start() {
+        switch transport.startSource() {
         case .ok:
             break
         case .notPermitted:
             menuBar.showPermissionNeeded()
         case .failed:
             break
+        }
+    }
+
+    /// Picks the HID source per settings. No Pi host configured → always IOKit (USB), i.e. the
+    /// original behavior unchanged. `.auto` uses USB when the Totem is attached to this Mac, else
+    /// the Pi bridge; `.usb`/`.piBridge` force one path.
+    private static func makeTransport(settings: Settings) -> any HIDSource {
+        let vid = 0x3A3C, pid = 0x0002
+        func usb() -> any HIDSource { IOKitHIDTransport(vid: vid, pid: pid) }
+        let host = settings.piBridgeHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !host.isEmpty else { return usb() }   // no bridge configured → today's behavior
+        func bridge() -> any HIDSource { PiBridgeTransport(host: host, port: settings.effectivePiBridgePort) }
+        switch settings.effectiveSource {
+        case .usb: return usb()
+        case .piBridge: return bridge()
+        case .auto: return IOKitHIDTransport.matchingDevicePresent(vid: vid, pid: pid) ? usb() : bridge()
         }
     }
 
