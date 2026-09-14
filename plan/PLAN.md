@@ -20,7 +20,7 @@
 | **M6** — Packaging, docs, polish | ✅ done | `tools/build_app.sh` release-builds, assembles `SplitForge.app` (agent, `LSUIElement`), ad-hoc signs, installs to `/Applications`; resource resolves from the bundle (verified). README documents install + Input Monitoring + tccutil recovery. Critic-approved. (Launch-at-login = optional M5 follow-up.) |
 | **F1** — Highlight the pressed key on the overlay | ✅ done (2026-07-04) | Firmware hooks **`process_record_kb`** → `raw_hid_send([0xCC,0x02,row,col,pressed])` per press/release (guards `< MATRIX_ROWS/COLS` to skip combos), calling through to the keymap's `process_record_user`. Host: `KeyPressReport.decode` + `KeyboardView.pressedMatrix` (blue) + `OverlayController.setKeyPressed`/`clearPressed` (re-sync heals stuck keys) + `AppDelegate.onReport` routes `0x02` exclusively (after `0x01`, before `vial.handle`). **88 tests**, critic-approved all 7 files. **Requires reflashing both halves** with the new `.uf2`s. |
 | **F2** — Shifted legends on the overlay (`1`→`!`) | ✅ done (2026-07-04) | **Host-only, no reflash.** `KeycodeLabeler.shiftedSymbol` = a 21-pair US-ANSI table (`1..0`→`!@#$%^&*()`, `-=[]\;'` `` ` `` `,./`→`_+{}\|:"~<>?`), applied to the *tap* keycode across basic/QK_MODS/MT/LT-with-tap (nil for letters, bare `L{n}`, layer-switches, `KC_NONUS_HASH 0x32`). `KeyLabel.shifted`→`PositionedKey.shifted`→`KeyboardView` draws it small/dimmed **top-LEFT** (mirror of the top-right `hold`; always 1 char so no collision); center label shrinks when either corner glyph is present. **93 tests**, both milestones critic-approved. |
-| **F3** — Cirque 40 mm trackpad on the right half | 🟡 awaiting hardware verification (2026-09-12) | **Firmware-only, no host change.** Right half's XIAO replaced by an **RP2040-Zero** on a 1:1-by-GPIO adapter, so `matrix_pins` / `SERIAL_USART_*` / `EE_HANDS` are untouched and only the *keymap* directory is patched — the overlay stays a keymap overlay. Cirque TM040040 on **I²C0, `GP12`=SDA / `GP13`=SCL**, relative mode, taps + secondary taps, throttle pinned to 10 ms. New `firmware/totem/mcuconf.h` enables `RP_I2C_USE_I2C0`; no `halconf.h` is needed because the cirque i2c driver emits `-DHAL_USE_I2C=TRUE` itself. Build gate green (`-DPOINTING_DEVICE_ENABLE` + `-DHAL_USE_I2C=TRUE` in `cflags.txt`; `i2c_master.o` + `cirque_pinnacle_i2c.o` built); both handed `.uf2`s rebuilt (212→232 blocks) and committed. **Requires reflashing both halves.** Plan: [`cirque-trackpad.md`](cirque-trackpad.md). |
+| **F3** — Cirque 40 mm trackpad on the right half | ↩️ reverted (2026-09-14) | Built and hardware-verified on the right half (pad tracked, taps worked), then **reverted** while chasing a dead split link. The link fault turned out to be unrelated — `D6`'s path is dead, fixed by moving the split to half-duplex on `D7`. The trackpad work is intact in commit `bb6724f` and is re-appliable: it is purely additive, touches no serial pin, and `GP12`/`GP13` remain free. Plan: [`cirque-trackpad.md`](cirque-trackpad.md). |
 
 Legend: ⬜ pending · 🟡 in progress · ✅ done (tests green + critic-approved). When marking a
 milestone ✅, add a one-line date + what changed, and fold any new lessons into **Gotchas**.
@@ -29,8 +29,7 @@ milestone ✅, add a one-line date + what changed, and fold any new lessons into
 
 ## Context
 
-The user configures a **Totem** (38-key split, wired, Vial/QMK — left half **XIAO RP2040**, right half
-**RP2040-Zero** since F3) in the Vial web app
+The user configures a **Totem** (38-key split, wired **XIAO RP2040**, Vial/QMK) in the Vial web app
 but can't keep layers in their head. Goal: a macOS overlay that **looks like the Totem** (split shape,
 all keys) and shows **what each key does on the active layer**, in real time, so they build a mental
 map. Must be **data-driven so other keyboards can be added without code**.
@@ -57,7 +56,7 @@ overlay) and [qmk-hid-host](https://github.com/zzeneg/qmk-hid-host) (firmware br
 ## Architecture
 
 ```
- Totem (RP2040, Vial-QMK)                               macOS app (Swift/AppKit)
+ Totem (XIAO RP2040, Vial-QMK)                          macOS app (Swift/AppKit)
  ┌──────────────────────────────┐                       ┌──────────────────────────────────┐
  │ layer_state_set_user() ──────┼─►[0xCC,0x01,layer] ──►│ HIDListener  (passive)           │
  │   raw_hid_send(32B)          │   usage 0xFF60        │      └─► active layer ┐           │
@@ -174,26 +173,15 @@ nRF52840/ZMK would need a different approach).
 ## Gotchas for agents (hard-won — read before touching related code)
 
 **Firmware / Vial**
-- **The three I²C defines must travel together (F3):** the Totem builds against board
-  `GENERIC_PROMICRO_RP2040`, whose `configs/config.h` supplies *guarded* fallbacks `I2C_DRIVER I2CD1`,
-  `I2C1_SDA_PIN GP2`, `I2C1_SCL_PIN GP3` — and **`GP2`/`GP3` are Totem matrix columns 4 and 2**. The
-  keymap's `config.h` is force-included *before* the board's, so ours win; drop any one of the three and
-  I²C silently drives two live matrix columns. Symptom would be a dead/erratic column, not an I²C error.
-- **No `halconf.h` is needed for I²C (F3):** `POINTING_DEVICE_DRIVER = cirque_pinnacle_i2c` sets
-  `I2C_DRIVER_REQUIRED = yes`, which emits `-DHAL_USE_I2C=TRUE` (`builddefs/common_features.mk:1005–1007`);
-  the common `halconf.h` guard is `#if !defined(HAL_USE_I2C)`, so the `-D` wins. But `RP_I2C_USE_I2C0 FALSE`
-  is **unguarded**, so an `mcuconf.h` override *is* required.
-- **`mcuconf.h` belongs in the KEYMAP dir (F3):** there is no `MCUCONFDIR` make variable — unlike
-  `halconf.h`/`chconf.h`, which resolve only from `KEYBOARD_PATH_1..5`. `mcuconf.h` is found purely by `-I`
-  order, and the keymap dir is `-I` entry #1 (board configs are #8), so `#include_next <mcuconf.h>` chains
-  correctly. This is what keeps `firmware/totem/` a keymap overlay rather than a firmware fork.
-- **`SPLIT_POINTING_ENABLE`'s 1 ms throttle does NOT apply to a cirque build (F3)** — the opposite of
-  what the header ordering suggests at a glance. `pointing_device.h:54` includes `cirque_pinnacle.h`
-  *before* its own `SPLIT_POINTING_ENABLE` fallback at `:130–134`, and `cirque_pinnacle.h:56–57` already
-  sets `POINTING_DEVICE_TASK_THROTTLE_MS 10` under the same `#if !defined` guard, so the 1 ms branch is
-  dead. Verified by counterfactual preprocessing: deleting our define still yields 10. We set it
-  explicitly anyway so the split link's traffic budget — shared with F1's per-key `0xCC 0x02` reports —
-  is stated in our config rather than inherited from driver include order.
+- **The split link is HALF-DUPLEX on `D7`/`GP1` (2026-09-14), not stock full-duplex.** `D6`'s path
+  died on this board after the XIAO header was repeatedly desoldered. Full duplex needs both pins in
+  *both* roles, so one dead line kills the link whichever half is master, while each half still works
+  standalone — it reads as a firmware bug and is not. The override is `#undef`s in the keymap's
+  `config.h` (force-included after the keyboard-level one), so `firmware/totem/` stays an overlay.
+  Only possible because the RP2040 PIO serial driver accepts any GPIO for `SERIAL_USART_TX_PIN`.
+- **Every flash resets the Vial dynamic keymap** — `VIAL_ENABLE` derives the VIA EEPROM magic from a
+  per-build `BUILD_ID` (`quantum/via.c`), which also makes builds non-reproducible: two builds of
+  identical source differ by ~10 bytes. Re-import `my_totem.vil` after flashing.
 - **Never define `raw_hid_receive()`** in the keymap — Vial/VIA owns it; overriding causes a compile
   conflict (vial-qmk issue #538). We are **send-only**; the host is a VIA *client* for reads.
 - Layer broadcast uses a **`0xCC` magic first byte** so it's distinguishable from Vial/VIA responses
@@ -210,10 +198,7 @@ nRF52840/ZMK would need a different approach).
   keymap swallows is still highlighted (physical press did happen — desired). Combos/virtual events use
   sentinel `row/col` (255) ⇒ the `< MATRIX_ROWS/COLS` guard skips them; no real Totem key is ≥ row 8 /
   col 5, so none is dropped.
-- Totem for Vial = **wired RP2040**. Left half is a stock **XIAO RP2040**; since F3 the right half is an
-  **RP2040-Zero** on an adapter that maps every net to the same GPIO number the XIAO used, so the matrix
-  and split-serial pin definitions are identical on both halves — only the spare GPIOs differ (GP12/GP13
-  carry the trackpad's I²C0 bus). The wireless XIAO **nRF52840 runs ZMK**, not Vial/QMK —
+- Totem for Vial = **wired XIAO RP2040**. The wireless XIAO **nRF52840 runs ZMK**, not Vial/QMK —
   raw HID over USB does **not** apply there; that's a different project.
 - **This Totem is a TWO-controller split with `EE_HANDS`** (`keyboards/geigeigeist/totem/config.h`;
   handedness in EEPROM). Build BOTH handed images and flash each half its own:
